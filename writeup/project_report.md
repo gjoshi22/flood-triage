@@ -1,108 +1,64 @@
-# Which parts of a flood map should a responder trust?
+# Can emergency responders trust a satellite flood map?
 
 ## Summary
 
-After a flood, satellite flood maps are produced within hours and feed emergency response and digital
-twins of the affected area. Some parts of these maps are wrong, and responders have little time to check
-them. I asked whether a flood-mapping model can tell a reviewer where to look. I trained a geospatial
-foundation model (TerraMind-tiny) on ImpactMesh-Flood, tested it on flood events it never saw, and ranked
-320 m map cells for human review. On unseen floods, reviewing the 20% of cells where the model is least
-certain finds about three quarters of the map's errors (77% in cross-validation over 58 events, 79% on a
-12-event holdout), against 20% for random review. A learned error spotter adds a few points (81% and 84%),
-but the gain over the model's own uncertainty is not statistically clear. On the August 2026 glacial lake
-outburst flood in Nepal, the model misses most of the flooded valley and is confident while doing so. Model
-uncertainty alone therefore cannot act as the reliability check for an event unlike the training data.
+On August 26, 2026, a deadly flash flood struck northern Nepal's Rasuwa district, where more than a thousand people died and about 4,700 were reported missing. Typically, hours after a flood, satellite maps guide where emergency responders and rescuers provide emergency support and supplies. But parts of these maps are wrong, and because floods like these affect such a huge area, thoroughly checking everything is time-consuming and demanding. Thus, I wanted to understand whether a flood-mapping model can help a reviewer identify its own mistakes, especially on floods it has never seen. To test this, I fine-tuned a geospatial foundation model, TerraMind-tiny, on radar and elevation data from 134 past floods and tested it on floods kept completely separate from training. On those floods, reviewing the 20% of the map where the model was least confident caught about three quarters of its errors (77–79%, vs 19% with random checking). Then I tested the model on the Rasuwa flash flood, a steep mountain disaster unlike its training floods. The model found only 6% of the affected area, yet it was more confident there than on most other floods. So the answer to my question depends on whether the flood resembles what the model has seen before. My takeaway: a model's own uncertainty helps on familiar floods, but on an unfamiliar flood it fails confidently, so it can't warn anyone.
 
 ## Data and evaluation
 
-ImpactMesh-Flood provides Sentinel-1 radar, Sentinel-2 optical imagery, elevation and flood masks for
-Copernicus EMS flood activations, as 256 x 256 patches at 10 m. Each mask labels pixels as no water,
-permanent water or flood.
+To perform this analysis, I used a publicly available flood dataset from IBM, DLR and ESA called ImpactMesh-Flood, built from 206 Copernicus emergency mapping activations. Each sample in the dataset is a 256 × 256 patch at 10 m resolution with Sentinel-1 radar, Sentinel-2 optical imagery, elevation and a mask marking each pixel as no water, permanent water or flood.
 
-The official splits keep areas of interest apart but not flood events: 52 of the test events also appear in
-training. Because the question is how a model behaves on a new disaster, I built an event-disjoint split.
-Events within 50 km and 30 days of each other are kept together, and the official 12 holdout events are left
-untouched until the final evaluation. Model training uses 123 events, checkpoint selection 11 events, the
-error spotter 60 events in five folds, and the final test the 12 holdout events. Results on the holdout are
-reported with and without three events from one September 2024 storm.
+My curiosity was how reliable a model can be on a flood it has never seen. Thus, the test set had to contain new floods. Upon further exploring the official split, I found it keeps map areas apart but not flood events: 52 of the 67 test events appeared in training as well. As a result, I rebuilt the split by event, keeping any events within 50 km and 30 days of each other bundled together. This gave 123 events for training, 11 for checkpoint selection, 60 for the error spotter (five folds), and the official 12-event holdout, which was not touched until the end. Three holdout events came from the same September 2024 storm as some training events, so I report holdout results both including and excluding them.
 
-Exploring the data shaped the set-up:
-- About half of flood-time optical images are mostly cloud (47% of patches over half cloudy, against 6%
-  before the flood), so the main model uses radar and elevation only.
-- In radar, flood and permanent water look alike during the flood; they differ only in the change from the
-  image before the flood (flood darkens by about 8 dB). The model therefore receives both time steps.
-- Flood pixels are concentrated in a few events (7 of 123 hold half of them), so scores are reported per
-  event, not pooled over pixels.
-- One event held 839 of 1,435 validation patches; validation was capped at 150 patches per event so the
-  checkpoint choice is not driven by a single flood.
+When I performed the exploratory data analysis, my plan changed further. First was the presence of clouds: 47% of optical patches taken during the flood events were mostly cloud, against 6% before, so my main model uses only radar and elevation. Another observation I made was that flood water and permanent water look the same in radar during a flood. The only way to separate them is comparing the before and during images, so the model sees both dates. Finally, a few flood events dominate: 7 of 123 training events hold half the flood pixels, and one event held 839 of 1,435 validation patches. So I scored every event separately and capped validation at 150 patches per event.
 
 ## Flood maps on unseen events
 
-TerraMind-tiny was fine-tuned with the ImpactMesh recipe (batch 16, learning rate 1e-4, dice loss, early
-stopping on validation loss). The baseline is a radar threshold (VV below -14.6 dB, chosen on non-holdout
-data), scored by its own rule, under which permanent water is not counted against it.
+Checking a model's mistakes only makes sense if its maps are decent to begin with. Thus, my first step was to train a model whose maps were worth checking. I fine-tuned TerraMind-tiny, a small geospatial foundation model, using the training recipe that comes with ImpactMesh. To see whether it actually learned something useful, I compared it against a simple baseline: a radar threshold, where any pixel darker than -14.6 dB in VV radar counted as water. I chose this threshold using only non-holdout data. To measure each map, I used flood IoU, the overlap between the predicted and true flood area, from 0 to 1, averaged per event.
 
-| Mean flood IoU per event, holdout | all 11 events with flood | without the storm (9) |
-|---|---|---|
+| Mean flood IoU per event, holdout | All 11 events with flood | Without the 2024 storm (9) |
+| --- | --- | --- |
 | Radar threshold | 0.258 | 0.238 |
 | Radar + elevation model | 0.377 | 0.313 |
 | Optical + radar + elevation model | 0.408 | 0.366 |
 
-Both models beat the threshold: radar + elevation by +0.120 (95% interval +0.020 to +0.215, better in 9 of
-11 events); with optical images by +0.150 (+0.076 to +0.224). Adding optical images does not give a clear
-average gain over radar alone (+0.034, interval -0.053 to +0.142), but it rescues the two events where the
-radar model fails almost completely (EMSR867: 0.03 to 0.46; EMSR251: 0.02 to 0.30).
+The radar and elevation model beat the threshold by 0.12 on average and did better on 9 of the 11 events. When I added optical imagery, the average went up slightly, but the gain over radar alone was not clear (+0.03, with an interval from -0.05 to +0.14). Where optical imagery really helped was on the two events where the radar model failed almost completely: EMSR867 rose from 0.03 to 0.46 and EMSR251 from 0.02 to 0.30. Because optical imagery is often covered by clouds during floods, I kept the radar and elevation model as my main model for the rest of the study.
 
 ## Where should a reviewer look?
 
-Each patch is split into 32 x 32 pixel cells (320 m). Within an event, cells are ranked and a reviewer checks
-the top 20%; the score is the share of the event's map errors inside those cells. The set-up was fixed before
-any results were seen.
+Once a working model was built, the main research question that I wanted to explore was: if a reviewer or emergency responder only has time to look at a part of the map, where should they focus? To do this, I split each patch into 32 × 32 pixel cells (320 m on a side) and, within each event, ranked the cells by different scores. The responder checks the top 20%, and the score is the share of that event's map errors inside those cells. I fixed this set-up before looking at any results, so I could not tune it to make one method look better.
 
-| Errors caught by reviewing 20% of cells | cross-validation (58 events) | holdout (12 events) |
-|---|---|---|
+| Errors caught by reviewing 20% of cells | Cross-validation (58 events) | Holdout (12 events) |
+| --- | --- | --- |
 | Random | 19% | 19% |
 | Predicted flood fraction | 71% | 68% |
 | Model uncertainty (entropy) | 77% | 79% |
-| Error spotter (gradient-boosted trees on cell features) | 81% | 84% |
+| Error spotter (gradient-boosted trees) | 81% | 84% |
 | Perfect ranking (upper bound) | 96% | 95% |
 
-Errors are concentrated: three quarters of cells contain none. The model's own uncertainty already points to
-most of them. The spotter's gain over entropy is +3.5 points in cross-validation, with an interval that
-includes zero (-0.9 to +7.2), so it is not established. Where the map is wrong over more than 20% of the area
-(EMSR867, EMSR845), even a perfect ranking catches only about 70% of the errors.
+One thing I noticed was that the errors are very concentrated: three quarters of cells had no errors at all. The model's own uncertainty, measured as entropy (how torn the model is between answers for each pixel), already pointed to most of the rest, catching 77–79% of the errors against 19% for random checking. I also trained an error spotter, a small model that predicts where the map is wrong. It added a few points, but in cross-validation its gain over entropy (+3.5 points) had an interval that includes zero (-0.9 to +7.2), so I cannot claim it reliably helps. On the holdout without the 2024 storm, the gain was larger and clearer (+8.9 points, interval +3.1 to +15.4), which is promising but not conclusive. Some events stayed hard for every method: on EMSR867 and EMSR845, where the map is wrong over large areas, even a perfect ranking catches only about 70% of the errors.
 
-## The Nepal glacial lake outburst flood
+## The Rasuwa flash flood, Nepal
 
-On the night of 25 August 2026, a glacial lake outburst sent a debris flood down the Bhote Koshi and
-Trishuli valleys. No Sentinel-2 image after the flood was usable for more than three weeks (54-97% cloud on
-every pass), so responders had radar only, and the radar + elevation model was applied to the Sentinel-1
-images of 16 and 28 August.
+The real test was the Rasuwa flash flood. On the morning of August 26, 2026, a glacier collapse triggered an ice-rock avalanche that sent a debris flood down the Bhote Koshi and Trishuli valleys. After the flood, no Sentinel-2 image was usable for more than three weeks (54–97% cloud on every pass), so a responder would have had radar only. Thus, I applied my radar and elevation model to the Sentinel-1 images from August 16 (before) and August 28 (after), and compared its map with UNOSAT's reference map, which outlines 37.4 km² of affected area inside a 363 km² analysis area.
 
-The case is far outside the training data: 63% of the mapped flood area is steeper than 15 degrees (training
-floods: 0.6%), and two days after the event the radar shows little open water in the mapped corridor. The
-model's map agrees with the UNOSAT reference where it marks water (precision 0.95) but finds only 6% of the
-reference area. Reviewing 20% of cells catches 33% of the errors with entropy and 38% with the spotter,
-against 22% at random. Most importantly, the model is confident: its average uncertainty on Nepal is lower
-than on 69% of the other events, and across all events average uncertainty does not track map quality.
+This event is very different from what the model learned from. 63% of the mapped flood area is steeper than 15 degrees, against only 0.6% in the training floods, and the flood left mud and debris rather than open standing water. Where the model said water, it was almost always right (precision 0.95), but it found only 6% of the reference area. Reviewing 20% of the cells still helped a little, catching 33% of the errors with entropy and 38% with the error spotter, against 22% at random.
+
+The most important observation I made was that the model was not worried. Its average uncertainty on Nepal was lower than on 69% of the other events. In other words, it missed almost the whole flooded valley while looking confident, so nothing in its output would have warned a responder to double-check.
 
 ## What this means
 
-For flood events like those it was trained on, the model's uncertainty is a useful guide for human review:
-a fifth of the map holds most of its mistakes. For a disaster unlike the training data, the model fails
-silently. A reliability layer for emergency mapping or digital-twin updates therefore needs a second
-component that asks whether the input itself resembles what the model has seen, for example terrain,
-sensor conditions or event type, before any map is accepted.
+For floods similar to the ones the model was trained on, its uncertainty is a useful guide: reviewing a fifth of the map catches most of its mistakes. But for a disaster unlike the training data, the model can fail silently, being wrong and confident at the same time. So a reliability check for emergency mapping, or for updating a digital twin from satellite maps, should not rely on the model's uncertainty alone. It also needs a step that asks whether the input itself looks like what the model has seen before, for example the terrain, sensor conditions or type of event. Where the satellite map cannot be trusted, other evidence such as ground reports or geotagged social media becomes the most valuable.
 
 ## Limitations
 
-- The holdout has 12 events, so several differences have wide intervals.
-- Nepal is a single event, and its reference outlines the damaged valley floor, not only water.
-- The DEMs used for training and for Nepal are different products, so terrain comparisons are approximate.
-- Models were trained once each; run-to-run variation was not measured.
+- The holdout has only 12 events, so several differences have wide intervals. This is why I also report cross-validation over 58 events.
+- Nepal is a single event, so it is a stress test, not a general claim. Its reference map outlines the damaged valley floor, including mud and rock, not only water.
+- The elevation data used for training and for Nepal come from different products, so terrain comparisons are approximate.
+- Each model was trained once, so run-to-run variation was not measured.
+- The model uses two time steps (before and during the flood), not all four in the dataset.
+- Event-disjoint splits prevent label leakage, but TerraMind's pretraining may still have seen imagery of some of these places.
 
 ## Reproducibility
 
-All notebooks, with their outputs, are at https://github.com/gjoshi22/flood-triage. Data: ImpactMesh-Flood
-(IBM/DLR/ESA), Copernicus Sentinel-1 and Sentinel-2 via Microsoft Planetary Computer, Copernicus DEM GLO-30,
-the UNOSAT flood extent for Nepal and Copernicus EMS EMSR927.
+All notebooks, with their outputs, are at https://github.com/gjoshi22/flood-triage. Data: ImpactMesh-Flood (IBM/DLR/ESA), Copernicus Sentinel-1 and Sentinel-2 via Microsoft Planetary Computer, Copernicus DEM GLO-30, the UNOSAT flood extent for Nepal, and Copernicus EMS EMSR927.
